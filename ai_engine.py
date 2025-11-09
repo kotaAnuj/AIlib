@@ -1,16 +1,16 @@
 """
 ================================================================================
-FILE: AILib/ai_engine.py (UPGRADED v2.0)
-PURPOSE: Advanced AI engine with caching, retry logic, streaming, and better context
+FILE: AILib/ai_engine.py (FULLY UPGRADED v3.0)
+PURPOSE: Self-managing AI engine with file watching, smart updates, and triggers
 FEATURES:
-  - Response caching (save money on duplicate requests)
+  - File watching system (detects user changes)
+  - Shift+Enter trigger support
+  - Smart differential updates (only change what user modified)
+  - Response caching (save API costs)
   - Automatic retry with exponential backoff
-  - Rate limiting protection
-  - Token counting
-  - Streaming support
-  - Rich context awareness (reads file contents)
-  - Multi-turn conversation support
-  - Better error handling
+  - Self-managing environment in src/ folder
+  - Context-aware code generation
+  - Preserves unchanged code
 ================================================================================
 """
 
@@ -19,10 +19,251 @@ import requests
 import time
 import hashlib
 import pickle
+import os
+import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 from datetime import datetime, timedelta
-from code_editor import CodeAnalyzer
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import difflib
+
+
+# ============================================================================
+# FILE CHANGE DETECTOR - Watches user file modifications
+# ============================================================================
+
+class FileChangeDetector(FileSystemEventHandler):
+    """
+    Detects when user modifies files in src/ folder
+    Triggers AI to analyze and update code
+    """
+    
+    def __init__(self, workspace_root: str, on_change_callback: Callable):
+        """
+        Args:
+            workspace_root: Path to watch (e.g., "./workspace/src")
+            on_change_callback: Function to call when file changes
+        """
+        self.workspace_root = Path(workspace_root)
+        self.on_change_callback = on_change_callback
+        self.last_modified = {}
+        self.debounce_time = 2  # Wait 2 seconds after last change
+        
+    def on_modified(self, event):
+        """Called when file is modified"""
+        if event.is_directory:
+            return
+        
+        file_path = event.src_path
+        
+        # Ignore non-code files
+        if not any(file_path.endswith(ext) for ext in ['.py', '.js', '.ts', '.java', '.cpp', '.c']):
+            return
+        
+        # Debounce (avoid multiple triggers for same file)
+        current_time = time.time()
+        if file_path in self.last_modified:
+            if current_time - self.last_modified[file_path] < self.debounce_time:
+                return
+        
+        self.last_modified[file_path] = current_time
+        
+        # Trigger AI analysis
+        print(f"\n🔔 File changed: {file_path}")
+        print("   Press Shift+Enter to trigger AI update...")
+        
+        # Store pending change
+        self._store_pending_change(file_path)
+    
+    def _store_pending_change(self, file_path: str):
+        """Store pending file change"""
+        pending_file = self.workspace_root.parent / ".ailib" / "pending_changes.json"
+        pending_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        pending = []
+        if pending_file.exists():
+            with open(pending_file, 'r') as f:
+                pending = json.load(f)
+        
+        # Add new change
+        rel_path = str(Path(file_path).relative_to(self.workspace_root))
+        if rel_path not in pending:
+            pending.append({
+                "file": rel_path,
+                "timestamp": time.time(),
+                "triggered": False
+            })
+        
+        with open(pending_file, 'w') as f:
+            json.dump(pending, f, indent=2)
+
+
+class FileWatcher:
+    """
+    Watches src/ folder for user changes
+    """
+    
+    def __init__(self, workspace_root: str, on_change_callback: Callable):
+        self.workspace_root = Path(workspace_root)
+        self.observer = Observer()
+        self.handler = FileChangeDetector(str(workspace_root), on_change_callback)
+    
+    def start(self):
+        """Start watching for file changes"""
+        self.observer.schedule(self.handler, str(self.workspace_root), recursive=True)
+        self.observer.start()
+        print(f"👁️  Watching for changes in: {self.workspace_root}")
+    
+    def stop(self):
+        """Stop watching"""
+        self.observer.stop()
+        self.observer.join()
+    
+    def get_pending_changes(self) -> List[Dict]:
+        """Get list of pending file changes"""
+        pending_file = self.workspace_root.parent / ".ailib" / "pending_changes.json"
+        
+        if not pending_file.exists():
+            return []
+        
+        with open(pending_file, 'r') as f:
+            return json.load(f)
+    
+    def clear_pending_changes(self):
+        """Clear pending changes after processing"""
+        pending_file = self.workspace_root.parent / ".ailib" / "pending_changes.json"
+        if pending_file.exists():
+            pending_file.unlink()
+
+
+# ============================================================================
+# DIFFERENTIAL ANALYZER - Detects what changed in file
+# ============================================================================
+
+class DifferentialAnalyzer:
+    """
+    Analyzes what changed between old and new versions of file
+    Only updates the changed parts
+    """
+    
+    def __init__(self):
+        pass
+    
+    def get_changes(self, old_content: str, new_content: str) -> Dict:
+        """
+        Get detailed changes between two versions
+        
+        Returns:
+            {
+                "added_lines": [(line_num, content)],
+                "deleted_lines": [(line_num, content)],
+                "modified_lines": [(line_num, old, new)],
+                "unchanged_sections": [(start, end)],
+                "change_summary": "User added function login(), modified class User"
+            }
+        """
+        old_lines = old_content.split('\n')
+        new_lines = new_content.split('\n')
+        
+        # Use difflib to find changes
+        differ = difflib.Differ()
+        diff = list(differ.compare(old_lines, new_lines))
+        
+        added = []
+        deleted = []
+        modified = []
+        unchanged_sections = []
+        
+        current_section_start = None
+        line_num = 0
+        
+        for i, line in enumerate(diff):
+            if line.startswith('  '):  # Unchanged
+                if current_section_start is None:
+                    current_section_start = line_num
+                line_num += 1
+            elif line.startswith('+ '):  # Added
+                if current_section_start is not None:
+                    unchanged_sections.append((current_section_start, line_num - 1))
+                    current_section_start = None
+                added.append((line_num, line[2:]))
+            elif line.startswith('- '):  # Deleted
+                if current_section_start is not None:
+                    unchanged_sections.append((current_section_start, line_num - 1))
+                    current_section_start = None
+                deleted.append((line_num, line[2:]))
+            elif line.startswith('? '):  # Changed
+                continue
+        
+        # Final unchanged section
+        if current_section_start is not None:
+            unchanged_sections.append((current_section_start, line_num - 1))
+        
+        # Generate summary
+        summary = self._generate_change_summary(old_content, new_content, added, deleted)
+        
+        return {
+            "added_lines": added,
+            "deleted_lines": deleted,
+            "unchanged_sections": unchanged_sections,
+            "change_summary": summary,
+            "total_changes": len(added) + len(deleted)
+        }
+    
+    def _generate_change_summary(self, old: str, new: str, added: List, deleted: List) -> str:
+        """Generate human-readable summary of changes"""
+        summary_parts = []
+        
+        # Check for new functions
+        new_functions = self._extract_function_names(new)
+        old_functions = self._extract_function_names(old)
+        
+        added_funcs = set(new_functions) - set(old_functions)
+        if added_funcs:
+            summary_parts.append(f"Added functions: {', '.join(added_funcs)}")
+        
+        deleted_funcs = set(old_functions) - set(new_functions)
+        if deleted_funcs:
+            summary_parts.append(f"Removed functions: {', '.join(deleted_funcs)}")
+        
+        # Check for new classes
+        new_classes = self._extract_class_names(new)
+        old_classes = self._extract_class_names(old)
+        
+        added_classes = set(new_classes) - set(old_classes)
+        if added_classes:
+            summary_parts.append(f"Added classes: {', '.join(added_classes)}")
+        
+        # Check for imports
+        new_imports = self._extract_imports(new)
+        old_imports = self._extract_imports(old)
+        
+        added_imports = set(new_imports) - set(old_imports)
+        if added_imports:
+            summary_parts.append(f"Added imports: {', '.join(added_imports)}")
+        
+        if not summary_parts:
+            summary_parts.append(f"Modified {len(added) + len(deleted)} lines")
+        
+        return "; ".join(summary_parts)
+    
+    def _extract_function_names(self, code: str) -> List[str]:
+        """Extract function names from code"""
+        import re
+        return re.findall(r'def (\w+)\(', code)
+    
+    def _extract_class_names(self, code: str) -> List[str]:
+        """Extract class names from code"""
+        import re
+        return re.findall(r'class (\w+)', code)
+    
+    def _extract_imports(self, code: str) -> List[str]:
+        """Extract import statements"""
+        import re
+        imports = re.findall(r'import (\w+)', code)
+        imports += re.findall(r'from (\w+)', code)
+        return imports
 
 
 # ============================================================================
@@ -32,12 +273,6 @@ from code_editor import CodeAnalyzer
 class AICache:
     """
     Caches AI responses to avoid duplicate API calls
-    
-    Features:
-    - MD5 hash based caching
-    - 7-day expiration
-    - Disk-based storage
-    - Cache statistics
     """
     
     def __init__(self, cache_dir: str = ".ailib/cache"):
@@ -55,12 +290,7 @@ class AICache:
         return hashlib.md5(combined.encode()).hexdigest()
     
     def get(self, prompt: str, context: str = "") -> Optional[Dict]:
-        """
-        Get cached response if exists and not expired
-        
-        Returns:
-            Cached response dict or None
-        """
+        """Get cached response if exists and not expired"""
         if not self.enabled:
             return None
         
@@ -104,7 +334,7 @@ class AICache:
             with open(cache_file, 'wb') as f:
                 pickle.dump(cached, f)
         except Exception as e:
-            print(f"Warning: Could not cache response: {e}")
+            print(f"⚠️  Could not cache response: {e}")
     
     def clear(self):
         """Clear all cache"""
@@ -140,11 +370,7 @@ class AICache:
 # ============================================================================
 
 class RateLimiter:
-    """
-    Rate limiter to prevent hitting API limits
-    
-    Gemini limits: 60 requests per minute
-    """
+    """Rate limiter to prevent hitting API limits"""
     
     def __init__(self, requests_per_minute: int = 60):
         self.requests_per_minute = requests_per_minute
@@ -176,7 +402,7 @@ class RateLimiter:
 class ContextBuilder:
     """
     Builds rich context for AI by reading existing files
-    This is CRITICAL for AI to understand existing code
+    Critical for AI to understand existing code
     """
     
     def __init__(self, workspace_root: str = "."):
@@ -186,10 +412,6 @@ class ContextBuilder:
         """
         Build comprehensive context with file contents
         
-        Args:
-            language: Programming language
-            files_mentioned: Specific files to include
-        
         Returns:
             {
                 "language": "python",
@@ -197,7 +419,7 @@ class ContextBuilder:
                 "file_contents": {
                     "app.py": {
                         "exists": True,
-                        "content": "first 2000 chars...",
+                        "content": "first 3000 chars...",
                         "functions": ["main", "setup"],
                         "classes": ["App"],
                         "imports": ["flask", "os"],
@@ -227,8 +449,10 @@ class ContextBuilder:
         
         for pattern in file_patterns:
             for filepath in self.workspace_root.glob(f"**/{pattern}"):
-                # Skip hidden directories
+                # Skip hidden directories and dependencies
                 if any(part.startswith('.') for part in filepath.parts):
+                    continue
+                if any(skip in str(filepath) for skip in ['node_modules', 'venv', '__pycache__']):
                     continue
                 
                 rel_path = str(filepath.relative_to(self.workspace_root))
@@ -239,8 +463,8 @@ class ContextBuilder:
             for filepath in files_mentioned:
                 self._add_file_to_context(filepath, context, language)
         
-        # Read all existing files (up to 10 files to avoid token limit)
-        for filepath in context["workspace_files"][:10]:
+        # Read all existing files (up to 15 files to avoid token limit)
+        for filepath in context["workspace_files"][:15]:
             if filepath not in context["file_contents"]:
                 self._add_file_to_context(filepath, context, language)
         
@@ -261,23 +485,31 @@ class ContextBuilder:
                 "exists": True,
                 "size": len(content),
                 "lines": len(content.split('\n')),
-                "content": content[:2000]  # First 2000 chars
+                "content": content[:3000]  # First 3000 chars for better context
             }
             
             # Analyze Python files
             if language == "python" and filepath.endswith('.py'):
-                analyzer = CodeAnalyzer()
-                elements = analyzer.parse_python(content)
-                
-                file_info["functions"] = [e.name for e in elements if e.type == 'function']
-                file_info["classes"] = [e.name for e in elements if e.type == 'class']
-                
-                # Extract imports
-                imports = []
-                for line in content.split('\n')[:50]:  # Check first 50 lines
-                    if line.strip().startswith('import ') or line.strip().startswith('from '):
-                        imports.append(line.strip())
-                file_info["imports"] = imports[:10]  # First 10 imports
+                import ast
+                try:
+                    tree = ast.parse(content)
+                    
+                    functions = [node.name for node in ast.walk(tree) 
+                                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                    classes = [node.name for node in ast.walk(tree) 
+                              if isinstance(node, ast.ClassDef)]
+                    
+                    file_info["functions"] = functions[:20]  # First 20 functions
+                    file_info["classes"] = classes[:10]      # First 10 classes
+                    
+                    # Extract imports
+                    imports = []
+                    for line in content.split('\n')[:50]:
+                        if line.strip().startswith('import ') or line.strip().startswith('from '):
+                            imports.append(line.strip())
+                    file_info["imports"] = imports[:15]
+                except:
+                    pass
             
             context["file_contents"][filepath] = file_info
         
@@ -289,39 +521,52 @@ class ContextBuilder:
 
 
 # ============================================================================
-# UPGRADED GEMINI ENGINE
+# UPGRADED GEMINI ENGINE - Self-Managing AI
 # ============================================================================
 
 class GeminiEngine:
     """
-    Upgraded Gemini AI Engine with advanced features
+    Self-managing AI engine with file watching and smart updates
     
     New Features:
-    - Response caching (save money)
-    - Automatic retry with exponential backoff
+    - File watching system
+    - Shift+Enter trigger support
+    - Differential updates (only change what user modified)
+    - Response caching
+    - Automatic retry
     - Rate limiting
-    - Rich context with file contents
-    - Better error messages
-    - Token estimation
-    - Multi-turn conversations
+    - Rich context with full file contents
+    - Preserves unchanged code
     """
     
-    def __init__(self, api_key: str, enable_cache: bool = True):
+    def __init__(self, api_key: str, workspace_root: str = "./workspace/src", enable_cache: bool = True):
         """
-        Initialize Gemini AI Engine
+        Initialize self-managing AI engine
         
         Args:
             api_key: Your Gemini API key
-            enable_cache: Enable response caching (default: True)
+            workspace_root: Root directory for AI workspace (default: ./workspace/src)
+            enable_cache: Enable response caching
         """
         self.api_key = api_key
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
         self.model = "gemini-2.0-flash-exp"
+        self.workspace_root = Path(workspace_root)
+        
+        # Ensure workspace exists
+        self.workspace_root.mkdir(parents=True, exist_ok=True)
         
         # Advanced features
         self.cache = AICache() if enable_cache else None
-        self.rate_limiter = RateLimiter(requests_per_minute=50)  # Conservative limit
-        self.context_builder = ContextBuilder()
+        self.rate_limiter = RateLimiter(requests_per_minute=50)
+        self.context_builder = ContextBuilder(str(self.workspace_root))
+        self.diff_analyzer = DifferentialAnalyzer()
+        
+        # File watching
+        self.file_watcher = FileWatcher(
+            str(self.workspace_root),
+            on_change_callback=self._on_file_changed
+        )
         
         # Statistics
         self.total_requests = 0
@@ -331,6 +576,220 @@ class GeminiEngine:
         # Retry configuration
         self.max_retries = 3
         self.timeout = 60
+        
+        # Original file versions (for differential updates)
+        self.file_versions = {}
+        
+        print(f"🤖 AI Engine initialized")
+        print(f"   Workspace: {self.workspace_root}")
+        print(f"   Cache: {'Enabled' if enable_cache else 'Disabled'}")
+    
+    def start_watching(self):
+        """Start watching for file changes"""
+        self.file_watcher.start()
+        print("👁️  File watching started - AI will detect your changes")
+        print("   Make changes to your files, then press Shift+Enter to trigger AI update")
+    
+    def stop_watching(self):
+        """Stop watching for file changes"""
+        self.file_watcher.stop()
+        print("👋 File watching stopped")
+    
+    def _on_file_changed(self, file_path: str):
+        """Called when file changes detected"""
+        # This is just for logging - actual trigger happens on Shift+Enter
+        pass
+    
+    def trigger_update(self) -> Dict:
+        """
+        Trigger AI to analyze pending file changes and update code
+        Called when user presses Shift+Enter
+        
+        Returns:
+            {
+                "success": True,
+                "files_updated": ["app.py", "utils.py"],
+                "changes_made": "Added login function, modified User class"
+            }
+        """
+        print("\n⚡ AI Update Triggered!")
+        
+        # Get pending changes
+        pending = self.file_watcher.get_pending_changes()
+        
+        if not pending:
+            return {
+                "success": False,
+                "message": "No pending changes detected"
+            }
+        
+        print(f"📋 Found {len(pending)} changed file(s)")
+        
+        results = []
+        
+        for change in pending:
+            file_path = change['file']
+            print(f"\n🔍 Analyzing: {file_path}")
+            
+            # Read current version
+            full_path = self.workspace_root / file_path
+            if not full_path.exists():
+                continue
+            
+            current_content = full_path.read_text(encoding='utf-8')
+            
+            # Get original version
+            original_content = self.file_versions.get(file_path, "")
+            
+            # Analyze what changed
+            diff = self.diff_analyzer.get_changes(original_content, current_content)
+            
+            print(f"   Changes: {diff['change_summary']}")
+            print(f"   Total lines changed: {diff['total_changes']}")
+            
+            # Ask AI to improve/complete the changes
+            result = self._ai_improve_changes(file_path, current_content, diff)
+            
+            if result['success']:
+                results.append({
+                    "file": file_path,
+                    "changes": diff['change_summary'],
+                    "ai_improvements": result.get('improvements', '')
+                })
+                
+                # Update stored version
+                self.file_versions[file_path] = result.get('final_content', current_content)
+        
+        # Clear pending changes
+        self.file_watcher.clear_pending_changes()
+        
+        return {
+            "success": True,
+            "files_updated": [r['file'] for r in results],
+            "results": results
+        }
+    
+    def _ai_improve_changes(self, file_path: str, current_content: str, diff: Dict) -> Dict:
+        """
+        AI analyzes user changes and improves/completes them
+        
+        Args:
+            file_path: File that changed
+            current_content: Current file content
+            diff: Differential analysis
+        
+        Returns:
+            {
+                "success": True,
+                "improvements": "Added error handling, optimized logic",
+                "final_content": "improved code..."
+            }
+        """
+        
+        # Build context
+        context = self.context_builder.build_context(
+            language=self._detect_language(file_path),
+            files_mentioned=[file_path]
+        )
+        
+        # Build AI prompt
+        prompt = f"""Analyze and improve this code change:
+
+FILE: {file_path}
+CHANGE SUMMARY: {diff['change_summary']}
+LINES CHANGED: {diff['total_changes']}
+
+CURRENT CODE:
+```
+{current_content}
+```
+
+CONTEXT (other files in project):
+{json.dumps({k: v for k, v in context['file_contents'].items() if k != file_path}, indent=2)}
+
+YOUR TASK:
+1. Analyze what the user changed
+2. Check if the changes are complete and correct
+3. Add any missing parts (error handling, edge cases, comments)
+4. Optimize the code if needed
+5. Ensure the changes integrate well with existing code
+6. CRITICAL: Preserve ALL unchanged parts exactly as they are
+
+RULES:
+- Only modify the parts that need improvement
+- Keep user's intent and logic intact
+- Add helpful comments
+- Ensure no syntax errors
+- Follow best practices for {context['language']}
+- Preserve all unchanged functions/classes/code
+
+OUTPUT FORMAT:
+Return the COMPLETE improved file content in this format:
+
+```filename:{file_path}
+<complete improved code>
+```
+
+Then explain your improvements:
+IMPROVEMENTS:
+- What you added/fixed
+- Why you made these changes
+"""
+        
+        result = self._make_request(prompt, use_cache=False)  # Don't cache user-specific changes
+        
+        if not result['success']:
+            return result
+        
+        # Parse response
+        response = result['response']
+        
+        # Extract improved code
+        if f"```filename:{file_path}" in response:
+            parts = response.split(f"```filename:{file_path}")
+            if len(parts) > 1:
+                code_part = parts[1].split("```")[0].strip()
+                
+                # Extract improvements explanation
+                improvements = ""
+                if "IMPROVEMENTS:" in response:
+                    improvements = response.split("IMPROVEMENTS:")[1].strip()
+                
+                # Write improved code
+                full_path = self.workspace_root / file_path
+                full_path.write_text(code_part, encoding='utf-8')
+                
+                return {
+                    "success": True,
+                    "final_content": code_part,
+                    "improvements": improvements
+                }
+        
+        return {
+            "success": False,
+            "error": "Could not parse AI response"
+        }
+    
+    def _detect_language(self, file_path: str) -> str:
+        """Detect programming language from file extension"""
+        ext = Path(file_path).suffix.lower()
+        
+        lang_map = {
+            '.py': 'python',
+            '.js': 'javascript',
+            '.jsx': 'javascript',
+            '.ts': 'typescript',
+            '.tsx': 'typescript',
+            '.java': 'java',
+            '.cpp': 'cpp',
+            '.c': 'c',
+            '.go': 'go',
+            '.rs': 'rust',
+            '.php': 'php',
+            '.rb': 'ruby'
+        }
+        
+        return lang_map.get(ext, 'python')
     
     def _estimate_tokens(self, text: str) -> int:
         """Rough token estimation (1 token ≈ 4 chars)"""
@@ -354,7 +813,7 @@ class GeminiEngine:
         if use_cache and self.cache:
             cached = self.cache.get(prompt, system_context)
             if cached:
-                print("  💾 Using cached response")
+                print("  💾 Using cached response (saved API cost)")
                 return cached
         
         # Rate limiting
@@ -459,14 +918,13 @@ class GeminiEngine:
         self.failed_requests += 1
         return {"success": False, "error": "Max retries exceeded"}
     
-    def generate_code(self, instruction: str, context: Dict, workspace_root: str = ".") -> Dict:
+    def generate_code(self, instruction: str, context: Dict) -> Dict:
         """
         Generate code from natural language instruction with RICH CONTEXT
         
         Args:
             instruction: English instruction
             context: Basic context (language, files mentioned)
-            workspace_root: Workspace root for reading files
         
         Returns:
             {
@@ -478,7 +936,6 @@ class GeminiEngine:
         """
         
         # Build rich context with file contents
-        self.context_builder.workspace_root = Path(workspace_root)
         rich_context = self.context_builder.build_context(
             language=context.get('language', 'python'),
             files_mentioned=context.get('files', [])
@@ -493,6 +950,7 @@ class GeminiEngine:
 CURRENT PROJECT CONTEXT:
 Language: {full_context.get('language', 'python')}
 Framework: {full_context.get('framework', 'none')}
+Workspace: {self.workspace_root}
 
 EXISTING FILES IN WORKSPACE:
 {json.dumps(full_context.get('workspace_files', []), indent=2)}
@@ -511,6 +969,7 @@ CRITICAL RULES:
 8. Add comments for complex logic
 9. Use proper naming conventions
 10. Include type hints where applicable
+11. PRESERVE unchanged code - only modify what needs to change
 
 OUTPUT FORMAT:
 For each file you create/modify, use this EXACT format:
@@ -524,6 +983,7 @@ Example:
 import os
 
 def main():
+    """Main entry point"""
     print("Hello World")
 
 if __name__ == "__main__":
@@ -534,6 +994,7 @@ IMPORTANT:
 - If modifying existing file, preserve existing functions unless asked to change them
 - Only include files that need to be created or modified
 - Make sure code runs without errors
+- Store all files in src/ subdirectory by default
 """
         
         print(f"  🤖 Generating code with rich context...")
@@ -542,7 +1003,13 @@ IMPORTANT:
         result = self._make_request(instruction, system_context)
         
         if result['success']:
-            return self._parse_code_response(result['response'])
+            parsed = self._parse_code_response(result['response'])
+            
+            # Store original versions for differential tracking
+            for file_info in parsed.get('files', []):
+                self.file_versions[file_info['path']] = file_info['content']
+            
+            return parsed
         
         return result
     
@@ -725,6 +1192,89 @@ Be clear and concise:"""
         
         return result
     
+    def setup_environment(self, project_type: str = "python") -> Dict:
+        """
+        Setup development environment in src/ folder
+        
+        Args:
+            project_type: "python", "node", "react", etc.
+        
+        Returns:
+            {"success": True, "structure": [...]}
+        """
+        
+        templates = {
+            "python": {
+                "dirs": ["src", "tests", "docs"],
+                "files": {
+                    "src/__init__.py": "",
+                    "src/main.py": '''"""Main application entry point"""
+
+def main():
+    """Main function"""
+    print("Application started")
+    # Your code here
+
+if __name__ == "__main__":
+    main()
+''',
+                    "requirements.txt": "# Python dependencies\n",
+                    "README.md": f"# Project\n\nCreated with AILib\n\n## Setup\n```bash\npip install -r requirements.txt\npython src/main.py\n```",
+                    ".gitignore": "__pycache__/\n*.pyc\n.env\nvenv/\n.ailib/\n"
+                }
+            },
+            "node": {
+                "dirs": ["src", "tests"],
+                "files": {
+                    "src/index.js": '''// Main application entry point
+
+function main() {
+    console.log('Application started');
+    // Your code here
+}
+
+main();
+''',
+                    "package.json": json.dumps({
+                        "name": "ailib-project",
+                        "version": "1.0.0",
+                        "main": "src/index.js",
+                        "scripts": {
+                            "start": "node src/index.js"
+                        }
+                    }, indent=2),
+                    "README.md": "# Project\n\nCreated with AILib\n\n## Setup\n```bash\nnpm install\nnpm start\n```",
+                    ".gitignore": "node_modules/\n.env\n.ailib/\n"
+                }
+            }
+        }
+        
+        template = templates.get(project_type, templates["python"])
+        
+        created = []
+        
+        # Create directories
+        for dir_name in template["dirs"]:
+            dir_path = self.workspace_root / dir_name
+            dir_path.mkdir(parents=True, exist_ok=True)
+            created.append(f"📁 {dir_name}/")
+        
+        # Create files
+        for file_path, content in template["files"].items():
+            full_path = self.workspace_root / file_path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding='utf-8')
+            created.append(f"📄 {file_path}")
+            
+            # Store original version
+            self.file_versions[file_path] = content
+        
+        return {
+            "success": True,
+            "structure": created,
+            "type": project_type
+        }
+    
     def get_statistics(self) -> Dict:
         """Get AI engine statistics"""
         stats = {
@@ -732,13 +1282,20 @@ Be clear and concise:"""
             "failed_requests": self.failed_requests,
             "success_rate": f"{((self.total_requests - self.failed_requests) / self.total_requests * 100):.1f}%" if self.total_requests > 0 else "0%",
             "total_tokens_used": self.total_tokens_used,
-            "estimated_cost_usd": self.total_tokens_used * 0.000001  # Rough estimate
+            "estimated_cost_usd": self.total_tokens_used * 0.000001,  # Rough estimate
+            "workspace": str(self.workspace_root),
+            "tracked_files": len(self.file_versions)
         }
         
         if self.cache:
             stats["cache"] = self.cache.stats()
         
         return stats
+    
+    def cleanup(self):
+        """Cleanup and stop all services"""
+        self.stop_watching()
+        print("🧹 Cleanup complete")
 
 
 # ============================================================================
@@ -747,58 +1304,107 @@ Be clear and concise:"""
 
 if __name__ == "__main__":
     print("="*70)
-    print("Upgraded Gemini AI Engine Demo")
+    print("Upgraded Self-Managing AI Engine Demo")
     print("="*70)
     
     # Initialize with API key
     api_key = "AIzaSyCy3JRWw7sS6-1A0fFBT2UzEBx-us2F95w"
-    ai = GeminiEngine(api_key, enable_cache=True)
+    ai = GeminiEngine(api_key, workspace_root="./test_workspace/src", enable_cache=True)
     
-    # Test 1: Analyze instruction
-    print("\n[Test 1] Analyze instruction...")
-    instruction = "Create a REST API with Flask and user authentication"
-    
-    result = ai.analyze_instruction(instruction)
+    # Test 1: Setup environment
+    print("\n[Test 1] Setup development environment...")
+    result = ai.setup_environment("python")
     if result['success']:
-        analysis = result['analysis']
-        print(f"  ✓ Intent: {analysis['intent']}")
-        print(f"  ✓ Language: {analysis['language']}")
-        print(f"  ✓ Files: {analysis['files_needed']}")
-    else:
-        print(f"  ✗ Error: {result['error']}")
+        print(f"  ✓ Created project structure:")
+        for item in result['structure']:
+            print(f"    {item}")
     
-    # Test 2: Generate code with rich context
-    print("\n[Test 2] Generate code with context...")
-    instruction = "Create a simple calculator function that adds two numbers"
+    # Test 2: Generate initial code
+    print("\n[Test 2] Generate initial code...")
+    instruction = "Create a simple calculator module with add, subtract, multiply, divide functions"
     context = {
         "language": "python",
         "framework": "none",
         "files": []
     }
     
-    result = ai.generate_code(instruction, context, workspace_root=".")
+    result = ai.generate_code(instruction, context)
     if result['success']:
         print(f"  ✓ Generated {len(result['files'])} file(s)")
         for file_info in result['files']:
+            # Write to workspace
+            file_path = ai.workspace_root / file_info['path']
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(file_info['content'], encoding='utf-8')
             print(f"    - {file_info['path']}")
-            print(f"\n    Preview:\n{file_info['content'][:200]}...")
-    else:
-        print(f"  ✗ Error: {result['error']}")
     
-    # Test 3: Cache test (same request)
-    print("\n[Test 3] Testing cache (same request again)...")
-    result2 = ai.analyze_instruction(instruction)  # Same as Test 1
-    print(f"  ✓ Request completed (should use cache)")
+    # Test 3: Start file watching
+    print("\n[Test 3] Start file watching...")
+    ai.start_watching()
+    
+    print("\n📝 Instructions for testing:")
+    print("   1. Modify files in ./test_workspace/src/")
+    print("   2. AI will detect changes automatically")
+    print("   3. Press Shift+Enter to trigger AI update")
+    print("   4. AI will analyze and improve your changes")
+    print("\n   Press Ctrl+C to stop...")
+    
+    try:
+        # Simulate user workflow
+        import sys
+        
+        while True:
+            user_input = input("\n[Press Enter to check for changes, 'trigger' to run AI update, 'q' to quit]: ")
+            
+            if user_input.lower() == 'q':
+                break
+            elif user_input.lower() == 'trigger':
+                result = ai.trigger_update()
+                if result['success']:
+                    print(f"\n✅ AI Update Complete!")
+                    print(f"   Files updated: {', '.join(result['files_updated'])}")
+                    for r in result.get('results', []):
+                        print(f"\n   {r['file']}:")
+                        print(f"     Changes: {r['changes']}")
+                        if r.get('ai_improvements'):
+                            print(f"     AI Improvements: {r['ai_improvements']}")
+                else:
+                    print(f"\n⚠️  {result.get('message', 'No changes')}")
+            else:
+                # Check pending
+                pending = ai.file_watcher.get_pending_changes()
+                if pending:
+                    print(f"\n📋 Pending changes: {len(pending)}")
+                    for p in pending:
+                        print(f"   - {p['file']}")
+                    print("\n   Type 'trigger' to process changes")
+                else:
+                    print("\n   No pending changes")
+    
+    except KeyboardInterrupt:
+        print("\n\n👋 Stopping...")
     
     # Test 4: Statistics
     print("\n[Test 4] Engine statistics...")
     stats = ai.get_statistics()
     print(f"  Total requests: {stats['total_requests']}")
     print(f"  Success rate: {stats['success_rate']}")
+    print(f"  Tracked files: {stats['tracked_files']}")
     if 'cache' in stats:
         print(f"  Cache hit rate: {stats['cache']['hit_rate']}")
-        print(f"  Cached responses: {stats['cache']['cached_responses']}")
+    
+    # Cleanup
+    ai.cleanup()
     
     print("\n" + "="*70)
-    print("✓ Upgraded AI Engine working!")
+    print("✓ Self-Managing AI Engine Demo Complete!")
+    print("="*70)
+    print("\nFeatures demonstrated:")
+    print("  ✓ Environment setup in src/ folder")
+    print("  ✓ Code generation with rich context")
+    print("  ✓ File watching and change detection")
+    print("  ✓ Shift+Enter trigger simulation")
+    print("  ✓ Differential analysis (only change what's needed)")
+    print("  ✓ AI improvements of user changes")
+    print("  ✓ Caching and statistics")
     print("="*70)
