@@ -1,25 +1,29 @@
 """
 ================================================================================
-AILib Core - Flexible Natural Language Programming
-Version: 2.0
-Features:
-  - Natural language instructions (no rigid JSON)
-  - Flexible file paths (file:path/to/file.ext)
-  - Schema/Flow based programming
-  - Web UI for chat + API setup
-  - Uses existing modules (file_access, terminal, code_editor, ai_engine)
+FILE: AILib/ailib_core.py (FULLY UPGRADED v3.0)
+PURPOSE: Complete self-managing AI development system with web UI
+FEATURES:
+  - Web UI for setup only (API key, project config)
+  - AI manages src/ folder autonomously
+  - File watching with Shift+Enter trigger
+  - Smart differential updates
+  - Real-time status updates
+  - Complete environment management
 ================================================================================
 """
 
 import json
 import re
 import time
+import threading
+import secrets
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from flask import Flask, render_template_string, request, jsonify, session
-import secrets
+from flask_cors import CORS
+from pynput import keyboard
 
-# Import existing modules
+# Import our upgraded modules
 from ailibrarys.file_access import AIDevManager
 from config import AILibConfig
 from ai_engine import GeminiEngine
@@ -27,568 +31,665 @@ from code_editor import SmartCodeEditor
 
 
 # ============================================================================
-# INSTRUCTION PARSER - Parse Natural Language Instructions
+# KEYBOARD LISTENER - Detect Shift+Enter
 # ============================================================================
 
-class FlexibleInstructionParser:
+class ShiftEnterListener:
     """
-    Parses natural language instructions with flexible format
-    
-    Supports:
-    - file:path/to/file.py
-    - schema 1: description
-    - flow1: description
-    - version: 1.0 (optional)
-    - Any natural language text
+    Listens for Shift+Enter key combination
+    Triggers AI update when pressed
     """
     
-    def parse(self, instruction_text: str) -> Dict:
-        """
-        Parse flexible instruction format
-        
-        Returns:
-            {
-                "files": ["src/test.py", "utils/helper.js"],
-                "schemas": [{"name": "schema1", "desc": "..."}],
-                "flows": [{"name": "flow1", "desc": "..."}],
-                "version": "1.0",
-                "raw_text": "original instruction",
-                "language": "python",
-                "action": "create|modify|analyze"
-            }
-        """
-        result = {
-            "files": [],
-            "schemas": [],
-            "flows": [],
-            "version": None,
-            "raw_text": instruction_text,
-            "language": self._detect_language(instruction_text),
-            "action": self._detect_action(instruction_text)
-        }
-        
-        lines = instruction_text.split('\n')
-        
-        for line in lines:
-            line = line.strip()
-            
-            # Extract file paths: file:src/test.py
-            if line.startswith('file:'):
-                filepath = line[5:].strip()
-                result["files"].append(filepath)
-            
-            # Extract version: version:1.0
-            elif line.startswith('version:'):
-                result["version"] = line[8:].strip()
-            
-            # Extract schemas: schema 1: description or schema1: description
-            elif re.match(r'^schema\s*\d*:', line, re.IGNORECASE):
-                schema_match = re.match(r'^schema\s*(\d*):\s*(.+)', line, re.IGNORECASE)
-                if schema_match:
-                    schema_num = schema_match.group(1) or "1"
-                    schema_desc = schema_match.group(2)
-                    result["schemas"].append({
-                        "name": f"schema{schema_num}",
-                        "description": schema_desc
-                    })
-            
-            # Extract flows: flow1: description or flow 1: description
-            elif re.match(r'^flow\s*\d*:', line, re.IGNORECASE):
-                flow_match = re.match(r'^flow\s*(\d*):\s*(.+)', line, re.IGNORECASE)
-                if flow_match:
-                    flow_num = flow_match.group(1) or "1"
-                    flow_desc = flow_match.group(2)
-                    result["flows"].append({
-                        "name": f"flow{flow_num}",
-                        "description": flow_desc
-                    })
-        
-        return result
+    def __init__(self, on_trigger_callback):
+        self.on_trigger_callback = on_trigger_callback
+        self.shift_pressed = False
+        self.listener = None
+        self.active = False
     
-    def _detect_language(self, text: str) -> str:
-        """Detect programming language from text"""
-        text_lower = text.lower()
-        
-        if any(word in text_lower for word in ['python', '.py', 'def ', 'import ']):
-            return "python"
-        elif any(word in text_lower for word in ['javascript', '.js', 'function ', 'const ', 'let ']):
-            return "javascript"
-        elif any(word in text_lower for word in ['typescript', '.ts', 'interface ']):
-            return "typescript"
-        elif any(word in text_lower for word in ['java', '.java', 'public class']):
-            return "java"
-        else:
-            return "python"  # Default
+    def start(self):
+        """Start listening for Shift+Enter"""
+        self.active = True
+        self.listener = keyboard.Listener(
+            on_press=self._on_press,
+            on_release=self._on_release
+        )
+        self.listener.start()
+        print("⌨️  Keyboard listener started - Press Shift+Enter to trigger AI")
     
-    def _detect_action(self, text: str) -> str:
-        """Detect what action user wants (create/modify/analyze)"""
-        text_lower = text.lower()
+    def stop(self):
+        """Stop listening"""
+        self.active = False
+        if self.listener:
+            self.listener.stop()
+        print("⌨️  Keyboard listener stopped")
+    
+    def _on_press(self, key):
+        """Called when key is pressed"""
+        if not self.active:
+            return
         
-        if any(word in text_lower for word in ['create', 'new', 'generate', 'build', 'make']):
-            return "create"
-        elif any(word in text_lower for word in ['modify', 'update', 'change', 'edit', 'add', 'fix']):
-            return "modify"
-        elif any(word in text_lower for word in ['analyze', 'check', 'review', 'explain', 'test']):
-            return "analyze"
-        else:
-            return "create"  # Default
+        try:
+            # Check for Shift key
+            if key == keyboard.Key.shift or key == keyboard.Key.shift_r:
+                self.shift_pressed = True
+            
+            # Check for Enter key while Shift is held
+            elif key == keyboard.Key.enter and self.shift_pressed:
+                print("\n⚡ Shift+Enter detected! Triggering AI update...")
+                # Call the callback in a separate thread to not block
+                threading.Thread(target=self.on_trigger_callback, daemon=True).start()
+        
+        except AttributeError:
+            pass
+    
+    def _on_release(self, key):
+        """Called when key is released"""
+        try:
+            if key == keyboard.Key.shift or key == keyboard.Key.shift_r:
+                self.shift_pressed = False
+        except AttributeError:
+            pass
 
 
 # ============================================================================
-# FLEXIBLE AILIB - Main System
+# PROJECT MANAGER - Handles project lifecycle
 # ============================================================================
 
-class FlexibleAILib:
+class ProjectManager:
     """
-    Flexible AILib that works with natural language in any format
-    No rigid JSON required
+    Manages project initialization, configuration, and status
     """
     
-    def __init__(self, workspace_root: str = ".", api_key: str = None):
+    def __init__(self, workspace_root: str):
+        self.workspace_root = Path(workspace_root)
+        self.config_file = self.workspace_root / ".ailib" / "project.json"
+    
+    def initialize_project(self, name: str, language: str, framework: str, description: str = "") -> Dict:
         """
-        Initialize FlexibleAILib
+        Initialize new project
         
         Args:
-            workspace_root: Project root directory
-            api_key: Gemini API key (optional, can be set later)
+            name: Project name
+            language: Programming language
+            framework: Framework (flask, react, etc.)
+            description: Project description
+        
+        Returns:
+            {"success": True, "project": {...}}
+        """
+        
+        # Create workspace structure
+        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        
+        # Create project config
+        project_config = {
+            "name": name,
+            "description": description,
+            "language": language,
+            "framework": framework,
+            "created": time.time(),
+            "version": "1.0.0",
+            "status": "initialized"
+        }
+        
+        # Save config
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_file, 'w') as f:
+            json.dump(project_config, f, indent=2)
+        
+        return {
+            "success": True,
+            "project": project_config,
+            "path": str(self.workspace_root)
+        }
+    
+    def load_project(self) -> Optional[Dict]:
+        """Load existing project config"""
+        if not self.config_file.exists():
+            return None
+        
+        with open(self.config_file, 'r') as f:
+            return json.load(f)
+    
+    def update_status(self, status: str):
+        """Update project status"""
+        project = self.load_project()
+        if project:
+            project["status"] = status
+            project["last_updated"] = time.time()
+            
+            with open(self.config_file, 'w') as f:
+                json.dump(project, f, indent=2)
+
+
+# ============================================================================
+# UPGRADED AILIB - Self-Managing AI System
+# ============================================================================
+
+class UpgradedAILib:
+    """
+    Complete self-managing AI development system
+    
+    Features:
+    - Web UI for setup only
+    - AI manages src/ folder
+    - File watching with Shift+Enter trigger
+    - Smart differential updates
+    - Real-time status
+    """
+    
+    def __init__(self, workspace_root: str = "./workspace"):
+        """
+        Initialize AI development system
+        
+        Args:
+            workspace_root: Root directory for workspace
         """
         self.workspace_root = Path(workspace_root).resolve()
         self.workspace_root.mkdir(exist_ok=True)
         
-        # Load config
-        self.config = AILibConfig(str(workspace_root))
+        # Core components
+        self.config = AILibConfig(str(self.workspace_root))
+        self.project_manager = ProjectManager(str(self.workspace_root))
         
-        # Initialize components using existing modules
+        # AI engine (initialized after API key is set)
+        self.ai = None
+        
+        # Dev manager for terminal and file access
         self.dev_manager = AIDevManager(
-            workspace_root=str(workspace_root),
+            workspace_root=str(self.workspace_root / "src"),
             terminal_mode="system"
         )
         
-        # Initialize smart editor
+        # Smart editor
         self.smart_editor = SmartCodeEditor(self.dev_manager.fs)
         
-        # Initialize AI engine
-        if api_key:
-            self.config.set_api_key('gemini', api_key)
+        # Keyboard listener for Shift+Enter
+        self.keyboard_listener = None
         
-        stored_key = self.config.get_api_key('gemini')
-        if stored_key:
-            self.ai = GeminiEngine(stored_key)
-        else:
-            self.ai = None
+        # Status tracking
+        self.status = {
+            "initialized": False,
+            "ai_ready": False,
+            "watching": False,
+            "pending_changes": 0,
+            "last_trigger": None
+        }
         
-        # Parser for flexible instructions
-        self.parser = FlexibleInstructionParser()
+        # Activity log
+        self.activity_log = []
+    
+    def _log_activity(self, message: str, type: str = "info"):
+        """Log activity for UI display"""
+        self.activity_log.append({
+            "timestamp": time.time(),
+            "message": message,
+            "type": type
+        })
         
-        # Chat history
-        self.chat_history = []
+        # Keep only last 50 activities
+        if len(self.activity_log) > 50:
+            self.activity_log = self.activity_log[-50:]
     
     def is_ready(self) -> Tuple[bool, str]:
         """Check if system is ready"""
         if not self.ai:
-            return False, "API key not set. Use set_api_key() or web interface."
+            return False, "API key not set"
+        
+        project = self.project_manager.load_project()
+        if not project:
+            return False, "Project not initialized"
+        
         return True, "Ready"
     
-    def set_api_key(self, api_key: str):
-        """Set API key and initialize AI"""
-        self.config.set_api_key('gemini', api_key)
-        self.ai = GeminiEngine(api_key)
-        return {"success": True, "message": "API key configured"}
-    
-    def chat(self, message: str) -> Dict:
+    def set_api_key(self, api_key: str) -> Dict:
         """
-        Chat with AI in natural language
+        Set API key and initialize AI
         
         Args:
-            message: Natural language message
+            api_key: Gemini API key
+        
+        Returns:
+            {"success": True, "message": "..."}
+        """
+        try:
+            self.config.set_api_key('gemini', api_key)
+            
+            # Initialize AI engine with workspace/src as root
+            src_path = self.workspace_root / "src"
+            self.ai = GeminiEngine(api_key, workspace_root=str(src_path), enable_cache=True)
+            
+            self.status["ai_ready"] = True
+            self._log_activity("✅ API key configured and AI engine initialized", "success")
+            
+            return {
+                "success": True,
+                "message": "API key configured successfully"
+            }
+        
+        except Exception as e:
+            self._log_activity(f"❌ Failed to configure API key: {str(e)}", "error")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def initialize_project(self, name: str, language: str, framework: str, description: str = "") -> Dict:
+        """
+        Initialize new project and setup environment
+        
+        Args:
+            name: Project name
+            language: Programming language
+            framework: Framework
+            description: Project description
+        
+        Returns:
+            {"success": True, "project": {...}, "structure": [...]}
+        """
+        
+        if not self.ai:
+            return {"success": False, "error": "API key not set"}
+        
+        try:
+            # Initialize project config
+            result = self.project_manager.initialize_project(name, language, framework, description)
+            
+            if not result["success"]:
+                return result
+            
+            # Setup development environment in src/ folder
+            env_result = self.ai.setup_environment(language)
+            
+            if not env_result["success"]:
+                return env_result
+            
+            self.status["initialized"] = True
+            self._log_activity(f"✅ Project '{name}' initialized with {language}/{framework}", "success")
+            
+            # Start file watching
+            self.start_watching()
+            
+            # Start keyboard listener
+            self.start_keyboard_listener()
+            
+            return {
+                "success": True,
+                "project": result["project"],
+                "structure": env_result["structure"],
+                "path": str(self.workspace_root)
+            }
+        
+        except Exception as e:
+            self._log_activity(f"❌ Project initialization failed: {str(e)}", "error")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def start_watching(self):
+        """Start watching for file changes"""
+        if not self.ai:
+            return
+        
+        self.ai.start_watching()
+        self.status["watching"] = True
+        self._log_activity("👁️  File watching started", "info")
+    
+    def stop_watching(self):
+        """Stop watching for file changes"""
+        if self.ai:
+            self.ai.stop_watching()
+        
+        self.status["watching"] = False
+        self._log_activity("🛑 File watching stopped", "info")
+    
+    def start_keyboard_listener(self):
+        """Start listening for Shift+Enter"""
+        if self.keyboard_listener:
+            return
+        
+        self.keyboard_listener = ShiftEnterListener(self._on_shift_enter_pressed)
+        self.keyboard_listener.start()
+        self._log_activity("⌨️  Keyboard listener started (Shift+Enter to trigger)", "info")
+    
+    def stop_keyboard_listener(self):
+        """Stop keyboard listener"""
+        if self.keyboard_listener:
+            self.keyboard_listener.stop()
+            self.keyboard_listener = None
+            self._log_activity("⌨️  Keyboard listener stopped", "info")
+    
+    def _on_shift_enter_pressed(self):
+        """Called when Shift+Enter is pressed"""
+        self._log_activity("⚡ Shift+Enter pressed - triggering AI update...", "info")
+        result = self.trigger_ai_update()
+        
+        if result["success"]:
+            self._log_activity(
+                f"✅ AI update complete - {len(result.get('files_updated', []))} file(s) updated",
+                "success"
+            )
+        else:
+            self._log_activity(
+                f"⚠️  {result.get('message', 'No changes')}",
+                "warning"
+            )
+    
+    def trigger_ai_update(self) -> Dict:
+        """
+        Trigger AI to analyze and update pending changes
+        Called when Shift+Enter is pressed
         
         Returns:
             {
                 "success": True,
-                "response": "AI response",
-                "files_created": [...],
-                "action_taken": "created code|analyzed|explained"
+                "files_updated": [...],
+                "results": [...]
             }
         """
+        
+        if not self.ai:
+            return {"success": False, "error": "AI not initialized"}
+        
+        self.status["last_trigger"] = time.time()
+        
+        result = self.ai.trigger_update()
+        
+        return result
+    
+    def get_pending_changes(self) -> List[Dict]:
+        """Get list of pending file changes"""
+        if not self.ai:
+            return []
+        
+        return self.ai.file_watcher.get_pending_changes()
+    
+    def execute_instruction(self, instruction: str) -> Dict:
+        """
+        Execute natural language instruction
+        
+        Args:
+            instruction: Natural language instruction
+        
+        Returns:
+            {"success": True, "files_created": [...], "message": "..."}
+        """
+        
+        if not self.ai:
+            return {"success": False, "error": "AI not initialized"}
+        
         ready, msg = self.is_ready()
         if not ready:
             return {"success": False, "error": msg}
         
-        # Add to chat history
-        self.chat_history.append({"role": "user", "content": message})
+        self._log_activity(f"📝 Executing: {instruction[:100]}...", "info")
         
-        # Parse instruction
-        parsed = self.parser.parse(message)
-        
-        # Build context
-        context = self._build_context(parsed)
-        
-        # Check if user wants to execute code or just chat
-        if parsed["files"] or parsed["schemas"] or parsed["flows"] or parsed["action"] in ["create", "modify"]:
-            # User wants to create/modify code
-            result = self._execute_instruction(message, parsed, context)
-        else:
-            # User just wants to chat/analyze
-            result = self._chat_only(message, context)
-        
-        # Add AI response to history
-        if result["success"]:
-            self.chat_history.append({"role": "assistant", "content": result["response"]})
-        
-        return result
-    
-    def _build_context(self, parsed: Dict) -> Dict:
-        """
-        Build context for AI with file contents
-        """
-        context = {
-            "language": parsed["language"],
-            "files": {},
-            "workspace_files": []
-        }
-        
-        # Get existing files in workspace
-        for ext in ['*.py', '*.js', '*.ts', '*.java', '*.cpp', '*.c', '*.go']:
-            for filepath in self.workspace_root.glob(f"**/{ext}"):
-                if '.ailib' not in str(filepath):
-                    rel_path = str(filepath.relative_to(self.workspace_root))
-                    context["workspace_files"].append(rel_path)
-        
-        # Read specific files mentioned
-        for filepath in parsed["files"]:
-            if self.dev_manager.fs.file_exists(filepath):
-                result = self.dev_manager.fs.read_file(filepath)
-                if result["success"]:
-                    context["files"][filepath] = {
-                        "exists": True,
-                        "content": result["content"][:2000],  # First 2000 chars
-                        "lines": len(result["content"].split('\n'))
-                    }
-            else:
-                context["files"][filepath] = {"exists": False}
-        
-        return context
-    
-    def _execute_instruction(self, instruction: str, parsed: Dict, context: Dict) -> Dict:
-        """
-        Execute instruction that creates/modifies code
-        """
-        print(f"\n{'='*70}")
-        print(f"📝 Instruction: {instruction[:100]}...")
-        print(f"{'='*70}\n")
-        
-        # Step 1: Analyze with AI
-        print("🔍 Step 1: Analyzing instruction...")
-        
-        analysis_prompt = f"""Analyze this development instruction:
-
-INSTRUCTION:
-{instruction}
-
-PARSED INFO:
-- Language: {parsed['language']}
-- Files: {parsed['files']}
-- Schemas: {parsed['schemas']}
-- Flows: {parsed['flows']}
-- Action: {parsed['action']}
-
-CONTEXT:
-- Existing workspace files: {context['workspace_files']}
-- Files mentioned: {list(context['files'].keys())}
-
-Return JSON:
-{{
-    "intent": "create_new|modify_existing|add_feature",
-    "files_to_create": ["path/to/file.ext"],
-    "files_to_modify": ["existing/file.ext"],
-    "dependencies": ["package1", "package2"],
-    "steps": ["step 1", "step 2", "step 3"]
-}}
-"""
-        
-        analysis_result = self.ai._make_request(analysis_prompt)
-        if not analysis_result['success']:
-            return {"success": False, "error": f"Analysis failed: {analysis_result.get('error')}"}
-        
-        # Parse JSON from response
         try:
-            response_text = analysis_result['response'].strip()
-            if response_text.startswith('```'):
-                response_text = '\n'.join(response_text.split('\n')[1:-1])
-            analysis = json.loads(response_text)
-        except:
-            analysis = {
-                "intent": parsed["action"],
-                "files_to_create": parsed["files"],
-                "files_to_modify": [],
-                "dependencies": [],
-                "steps": ["Generate code based on instruction"]
+            # Analyze instruction
+            analysis = self.ai.analyze_instruction(instruction)
+            
+            if not analysis["success"]:
+                return analysis
+            
+            intent = analysis["analysis"]
+            
+            # Build context
+            context = {
+                "language": intent.get("language", "python"),
+                "framework": intent.get("framework", "none"),
+                "files": intent.get("files_needed", [])
             }
-        
-        print(f"   Intent: {analysis.get('intent', 'unknown')}")
-        print(f"   Files to create: {analysis.get('files_to_create', [])}")
-        print(f"   Files to modify: {analysis.get('files_to_modify', [])}\n")
-        
-        # Step 2: Generate code
-        print("🤖 Step 2: Generating code...")
-        
-        code_prompt = f"""Generate code for this instruction:
-
-INSTRUCTION:
-{instruction}
-
-ANALYSIS:
-{json.dumps(analysis, indent=2)}
-
-CONTEXT:
-Language: {context['language']}
-Existing files: {json.dumps(context['files'], indent=2)}
-
-REQUIREMENTS:
-1. Generate PRODUCTION-READY code (no placeholders)
-2. Handle all edge cases
-3. Include proper error handling
-4. Add comments where needed
-5. Follow best practices for {context['language']}
-
-OUTPUT FORMAT:
-For each file, use this EXACT format:
-
-```filename:path/to/file.ext
-<complete working code>
-```
-
-If modifying existing file, use:
-
-```filename:path/to/file.ext
-<complete updated code>
-```
-
-Generate all necessary code now:
-"""
-        
-        code_result = self.ai._make_request(code_prompt)
-        if not code_result['success']:
-            return {"success": False, "error": f"Code generation failed: {code_result.get('error')}"}
-        
-        # Parse generated code
-        generated_files = self._parse_code_response(code_result['response'])
-        print(f"   ✓ Generated {len(generated_files)} file(s)\n")
-        
-        # Step 3: Write files
-        print("💾 Step 3: Writing files...")
-        created_files = []
-        
-        for file_info in generated_files:
-            filepath = file_info['path']
-            content = file_info['content']
             
-            result = self.dev_manager.fs.write_file(filepath, content)
+            # Generate code
+            result = self.ai.generate_code(instruction, context)
             
-            if result['success']:
-                print(f"   ✓ {filepath}")
-                created_files.append(filepath)
-            else:
-                print(f"   ✗ Failed: {filepath}")
-        
-        # Step 4: Validate if Python
-        if context['language'] == 'python':
-            print("\n🔧 Step 4: Validating Python code...")
-            terminal_id = self.dev_manager.terminal.create("Validator")
+            if not result["success"]:
+                return result
             
-            for filepath in created_files:
-                if filepath.endswith('.py'):
-                    validation = self.dev_manager.terminal.run(
-                        terminal_id,
-                        f"python -m py_compile {filepath}",
-                        capture_output=True
-                    )
-                    
-                    if validation.get('exit_code') == 0:
-                        print(f"   ✓ {filepath} is valid")
-                    else:
-                        print(f"   ⚠️  {filepath} has errors")
-                        print(f"      Attempting auto-fix...")
-                        
-                        # Auto-fix
-                        file_content = self.dev_manager.fs.read_file(filepath)
-                        if file_content['success']:
-                            fix_result = self.ai.fix_error(
-                                file_content['content'],
-                                validation.get('error', ''),
-                                context
-                            )
-                            
-                            if fix_result['success']:
-                                self.dev_manager.fs.write_file(filepath, fix_result['response'])
-                                print(f"      ✓ Fixed")
-                            else:
-                                print(f"      ✗ Could not fix")
-        
-        # Step 5: Install dependencies
-        if analysis.get('dependencies'):
-            print(f"\n📦 Step 5: Installing dependencies...")
-            terminal_id = self.dev_manager.terminal.create("Installer")
+            # Write files to workspace
+            created_files = []
             
-            if context['language'] == 'python':
-                cmd = f"pip install {' '.join(analysis['dependencies'])}"
-            elif context['language'] == 'javascript':
-                cmd = f"npm install {' '.join(analysis['dependencies'])}"
-            else:
-                cmd = None
+            for file_info in result["files"]:
+                filepath = file_info["path"]
+                content = file_info["content"]
+                
+                # Ensure file is in src/ directory
+                if not filepath.startswith("src/"):
+                    filepath = f"src/{filepath}"
+                
+                write_result = self.dev_manager.fs.write_file(filepath, content)
+                
+                if write_result["success"]:
+                    created_files.append(filepath)
+                    self._log_activity(f"📄 Created: {filepath}", "success")
             
-            if cmd:
-                self.dev_manager.terminal.run(terminal_id, cmd)
-                print(f"   ✓ Installed {len(analysis['dependencies'])} packages")
-        
-        print(f"\n{'='*70}")
-        print("✅ Instruction completed!")
-        print(f"{'='*70}\n")
-        
-        return {
-            "success": True,
-            "response": f"Created {len(created_files)} file(s): {', '.join(created_files)}",
-            "files_created": created_files,
-            "action_taken": "created code",
-            "analysis": analysis
-        }
-    
-    def _chat_only(self, message: str, context: Dict) -> Dict:
-        """
-        Just chat with AI without executing code
-        """
-        prompt = f"""User message: {message}
-
-Context:
-- Language: {context['language']}
-- Workspace files: {context['workspace_files']}
-
-Respond naturally and helpfully. If user asks about code, explain clearly.
-"""
-        
-        result = self.ai._make_request(prompt)
-        
-        if result['success']:
+            # Install dependencies if needed
+            if intent.get("dependencies"):
+                self._install_dependencies(intent["dependencies"], context["language"])
+            
             return {
                 "success": True,
-                "response": result['response'],
-                "files_created": [],
-                "action_taken": "explained"
+                "files_created": created_files,
+                "message": f"Created {len(created_files)} file(s)",
+                "analysis": intent
             }
-        else:
-            return {"success": False, "error": result.get('error')}
-    
-    def _parse_code_response(self, response: str) -> List[Dict]:
-        """Parse AI response to extract code files"""
-        files = []
         
-        if "```filename:" in response:
-            parts = response.split("```filename:")
-            
-            for part in parts[1:]:
-                lines = part.split('\n', 1)
-                if len(lines) < 2:
-                    continue
-                
-                filepath = lines[0].strip()
-                code_block = lines[1]
-                
-                if "```" in code_block:
-                    code_block = code_block.split("```")[0]
-                
-                files.append({
-                    "path": filepath,
-                    "content": code_block.strip()
-                })
-        else:
-            # Single file - try to extract from markdown
-            code = response
-            if response.strip().startswith("```"):
-                lines = response.strip().split('\n')
-                if lines[-1].strip() == "```":
-                    code = '\n'.join(lines[1:-1])
-            
-            # Use first mentioned file or default
-            files.append({
-                "path": "generated_code.py",
-                "content": code.strip()
-            })
-        
-        return files
+        except Exception as e:
+            self._log_activity(f"❌ Instruction failed: {str(e)}", "error")
+            return {
+                "success": False,
+                "error": str(e)
+            }
     
-    def get_workspace_status(self) -> Dict:
-        """Get current workspace status"""
-        tree = self.dev_manager.fs.get_tree(max_depth=3)
+    def _install_dependencies(self, dependencies: List[str], language: str):
+        """Install project dependencies"""
+        terminal_id = self.dev_manager.terminal.create("Package Installer")
+        
+        if language == "python":
+            cmd = f"pip install {' '.join(dependencies)}"
+        elif language in ["javascript", "typescript"]:
+            cmd = f"npm install {' '.join(dependencies)}"
+        else:
+            return
+        
+        self._log_activity(f"📦 Installing dependencies: {', '.join(dependencies)}", "info")
+        
+        result = self.dev_manager.terminal.run(terminal_id, cmd, capture_output=True)
+        
+        if result.get("success"):
+            self._log_activity(f"✅ Installed {len(dependencies)} package(s)", "success")
+        else:
+            self._log_activity(f"⚠️  Package installation had issues", "warning")
+    
+    def get_status(self) -> Dict:
+        """Get current system status"""
+        
+        # Update pending changes count
+        pending = self.get_pending_changes()
+        self.status["pending_changes"] = len(pending)
+        
+        # Get AI statistics
+        ai_stats = {}
+        if self.ai:
+            ai_stats = self.ai.get_statistics()
+        
+        # Get project info
+        project = self.project_manager.load_project()
+        
+        # Get workspace tree
+        tree = self.dev_manager.fs.get_tree(max_depth=2)
         
         return {
+            "status": self.status,
+            "project": project,
+            "ai_stats": ai_stats,
             "workspace": str(self.workspace_root),
-            "files": tree.get('tree', []),
-            "recent_operations": self.dev_manager.fs.get_operation_log(last_n=10),
-            "chat_history": self.chat_history[-10:]  # Last 10 messages
+            "workspace_tree": tree.get("tree", []),
+            "activity_log": self.activity_log[-10:],  # Last 10 activities
+            "pending_changes": pending
         }
+    
+    def cleanup(self):
+        """Cleanup and stop all services"""
+        self.stop_watching()
+        self.stop_keyboard_listener()
+        if self.ai:
+            self.ai.cleanup()
+        
+        self._log_activity("🧹 System cleanup complete", "info")
 
 
 # ============================================================================
-# WEB INTERFACE - Flask App for Chat + Setup
+# WEB INTERFACE - Flask App
 # ============================================================================
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
+CORS(app)
 
 # Global AILib instance
 ailib_instance = None
 
+# HTML Template with modern UI
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AILib - Natural Language Programming</title>
+    <title>AILib - Self-Managing AI Development</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
         }
+        
         .container {
-            max-width: 900px;
+            max-width: 1200px;
             margin: 0 auto;
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
         }
+        
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             padding: 30px;
             text-align: center;
         }
-        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-        .header p { opacity: 0.9; font-size: 1.1em; }
-        .setup-section {
-            padding: 30px;
-            border-bottom: 2px solid #f0f0f0;
+        
+        .header h1 { 
+            font-size: 2.5em; 
+            margin-bottom: 10px;
+            animation: fadeIn 1s;
         }
-        .setup-section h2 { margin-bottom: 20px; color: #333; }
-        .input-group {
+        
+        .header p { 
+            opacity: 0.9; 
+            font-size: 1.1em;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .tabs {
             display: flex;
-            gap: 10px;
+            background: #f5f5f5;
+            border-bottom: 2px solid #ddd;
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            background: #f5f5f5;
+            border: none;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        
+        .tab:hover {
+            background: #e0e0e0;
+        }
+        
+        .tab.active {
+            background: white;
+            border-bottom: 3px solid #667eea;
+            color: #667eea;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 30px;
+        }
+        
+        .tab-content.active {
+            display: block;
+            animation: slideIn 0.3s;
+        }
+        
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        
+        .section {
+            margin-bottom: 30px;
+        }
+        
+        .section h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        
+        .input-group {
             margin-bottom: 15px;
         }
-        input[type="text"], input[type="password"] {
-            flex: 1;
+        
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 600;
+        }
+        
+        input[type="text"],
+        input[type="password"],
+        select,
+        textarea {
+            width: 100%;
             padding: 15px;
             border: 2px solid #ddd;
             border-radius: 10px;
             font-size: 16px;
             transition: border 0.3s;
         }
-        input:focus {
+        
+        input:focus,
+        select:focus,
+        textarea:focus {
             outline: none;
             border-color: #667eea;
         }
+        
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+        }
+        
         button {
             padding: 15px 30px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -598,106 +699,180 @@ HTML_TEMPLATE = """
             cursor: pointer;
             font-size: 16px;
             font-weight: bold;
-            transition: transform 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s;
         }
-        button:hover { transform: translateY(-2px); }
-        button:active { transform: translateY(0); }
-        .status {
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status-box {
             padding: 15px;
             border-radius: 10px;
             margin-top: 15px;
             font-weight: bold;
+            animation: slideDown 0.3s;
         }
-        .status.success { background: #d4edda; color: #155724; }
-        .status.error { background: #f8d7da; color: #721c24; }
-        .chat-section {
-            height: 500px;
-            display: flex;
-            flex-direction: column;
-            padding: 30px;
+        
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-        .chat-messages {
-            flex: 1;
+        
+        .status-box.success {
+            background: #d4edda;
+            color: #155724;
+            border-left: 4px solid #28a745;
+        }
+        
+        .status-box.error {
+            background: #f8d7da;
+            color: #721c24;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .status-box.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border-left: 4px solid #17a2b8;
+        }
+        
+        .status-box.warning {
+            background: #fff3cd;
+            color: #856404;
+            border-left: 4px solid #ffc107;
+        }
+        
+        .activity-log {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            max-height: 400px;
             overflow-y: auto;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 10px;
-            margin-bottom: 20px;
         }
-        .message {
-            margin-bottom: 20px;
-            padding: 15px;
-            border-radius: 10px;
-            max-width: 80%;
-        }
-        .message.user {
-            background: #667eea;
-            color: white;
-            margin-left: auto;
-        }
-        .message.assistant {
-            background: white;
-            border: 2px solid #ddd;
-        }
-        .message .role {
-            font-weight: bold;
-            margin-bottom: 5px;
-            font-size: 0.9em;
-            opacity: 0.8;
-        }
-        .message .content {
-            line-height: 1.6;
-            white-space: pre-wrap;
-        }
-        .code-block {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 15px;
+        
+        .activity-item {
+            padding: 10px;
+            margin-bottom: 10px;
             border-radius: 5px;
-            margin: 10px 0;
-            overflow-x: auto;
-            font-family: 'Courier New', monospace;
+            background: white;
+            border-left: 3px solid #667eea;
         }
-        .chat-input {
-            display: flex;
-            gap: 10px;
+        
+        .activity-item.success {
+            border-left-color: #28a745;
         }
-        .chat-input textarea {
-            flex: 1;
-            padding: 15px;
-            border: 2px solid #ddd;
+        
+        .activity-item.error {
+            border-left-color: #dc3545;
+        }
+        
+        .activity-item.warning {
+            border-left-color: #ffc107;
+        }
+        
+        .activity-time {
+            font-size: 0.85em;
+            color: #888;
+            margin-bottom: 5px;
+        }
+        
+        .pending-changes {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
             border-radius: 10px;
-            resize: none;
-            font-size: 16px;
-            font-family: inherit;
-        }
-        .example-instructions {
-            background: #f8f9fa;
             padding: 20px;
-            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .pending-changes h3 {
+            color: #856404;
+            margin-bottom: 10px;
+        }
+        
+        .file-list {
+            list-style: none;
+        }
+        
+        .file-list li {
+            padding: 8px;
+            background: white;
+            margin-bottom: 5px;
+            border-radius: 5px;
+            border-left: 3px solid #ffc107;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
             margin-top: 20px;
         }
-        .example-instructions h3 {
-            margin-bottom: 15px;
-            color: #333;
+        
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
         }
-        .example {
-            background: white;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 10px;
-            border-left: 4px solid #667eea;
-            cursor: pointer;
-            transition: transform 0.2s;
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            margin: 10px 0;
         }
-        .example:hover {
-            transform: translateX(5px);
+        
+        .stat-label {
+            opacity: 0.9;
+            font-size: 0.9em;
         }
-        .example code {
-            display: block;
-            white-space: pre-wrap;
+        
+        .trigger-button {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            font-size: 1.2em;
+            padding: 20px 40px;
+            margin: 20px 0;
+            width: 100%;
+        }
+        
+        .keyboard-hint {
+            text-align: center;
+            color: #666;
+            margin-top: 10px;
+            font-style: italic;
+        }
+        
+        .workspace-tree {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
             font-family: 'Courier New', monospace;
-            color: #555;
+            font-size: 0.9em;
+        }
+        
+        .tree-item {
+            padding: 5px;
+            margin-left: 20px;
+        }
+        
+        .tree-folder::before {
+            content: "📁 ";
+        }
+        
+        .tree-file::before {
+            content: "📄 ";
         }
     </style>
 </head>
@@ -705,78 +880,161 @@ HTML_TEMPLATE = """
     <div class="container">
         <div class="header">
             <h1>🚀 AILib</h1>
-            <p>Natural Language Programming - Code in Any Language You Speak</p>
+            <p>Self-Managing AI Development System</p>
         </div>
         
-        <div class="setup-section">
-            <h2>⚙️ Setup</h2>
-            <div class="input-group">
-                <input type="password" id="apiKey" placeholder="Enter your Gemini API key (AIza...)">
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('setup')">⚙️ Setup</button>
+            <button class="tab" onclick="showTab('workspace')">💻 Workspace</button>
+            <button class="tab" onclick="showTab('status')">📊 Status</button>
+        </div>
+        
+        <!-- Setup Tab -->
+        <div id="setup-tab" class="tab-content active">
+            <div class="section">
+                <h2>1️⃣ Configure API Key</h2>
+                <div class="input-group">
+                    <label>Gemini API Key</label>
+                    <input type="password" id="apiKey" placeholder="AIza... (Get from https://makersuite.google.com/app/apikey)">
+                </div>
                 <button onclick="setApiKey()">Set API Key</button>
+                <div id="apiStatus"></div>
             </div>
-            <div class="input-group">
-                <input type="text" id="workspace" value="./workspace" placeholder="Workspace path">
-                <button onclick="initWorkspace()">Initialize Workspace</button>
-            </div>
-            <div id="status"></div>
             
-            <div class="example-instructions">
-                <h3>📝 Example Instructions (Click to Use)</h3>
-                <div class="example" onclick="useExample(this)">
-                    <code>file:src/calculator.py
-
-schema 1: take 2 inputs -> calculate sum -> return square of sum -> print output
-
-Create a calculator program</code>
+            <div class="section">
+                <h2>2️⃣ Initialize Project</h2>
+                <div class="input-group">
+                    <label>Project Name</label>
+                    <input type="text" id="projectName" placeholder="my-awesome-project">
                 </div>
-                <div class="example" onclick="useExample(this)">
-                    <code>file:utils/math_helper.js
-
-flow1:
-    inputs = a, b, c
-    sum = a + b + c
-    print(sum)
-
-Make it work in JavaScript</code>
+                <div class="input-group">
+                    <label>Programming Language</label>
+                    <select id="language">
+                        <option value="python">Python</option>
+                        <option value="javascript">JavaScript</option>
+                        <option value="typescript">TypeScript</option>
+                        <option value="java">Java</option>
+                        <option value="cpp">C++</option>
+                        <option value="go">Go</option>
+                    </select>
                 </div>
-                <div class="example" onclick="useExample(this)">
-                    <code>file:api/server.py
-version:1.0
-
-Create a Flask REST API with these endpoints:
-- GET /users - list all users
-- POST /users - create user
-- GET /users/:id - get single user
-
-Include database setup</code>
+                <div class="input-group">
+                    <label>Framework</label>
+                    <select id="framework">
+                        <option value="none">None</option>
+                        <option value="flask">Flask</option>
+                        <option value="django">Django</option>
+                        <option value="react">React</option>
+                        <option value="express">Express</option>
+                        <option value="spring">Spring</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Description (Optional)</label>
+                    <textarea id="description" placeholder="Describe your project..."></textarea>
+                </div>
+                <button onclick="initializeProject()">Initialize Project</button>
+                <div id="projectStatus"></div>
+            </div>
+            
+            <div class="section">
+                <h2>3️⃣ Start Coding!</h2>
+                <p style="color: #666; line-height: 1.6;">
+                    Once your project is initialized:
+                    <br>1. Navigate to <code style="background:#f5f5f5;padding:3px 6px;border-radius:3px;">workspace/src/</code> folder
+                    <br>2. Start coding as you normally would
+                    <br>3. When you want AI assistance, press <strong>Shift + Enter</strong>
+                    <br>4. AI will analyze your changes and improve them
+                </p>
+            </div>
+        </div>
+        
+        <!-- Workspace Tab -->
+        <div id="workspace-tab" class="tab-content">
+            <div class="section">
+                <h2>📝 Execute Instruction</h2>
+                <div class="input-group">
+                    <label>Tell AI what to create</label>
+                    <textarea id="instruction" rows="4" placeholder="Example: Create a REST API with Flask that has user authentication"></textarea>
+                </div>
+                <button onclick="executeInstruction()">Execute Instruction</button>
+                <div id="instructionStatus"></div>
+            </div>
+            
+            <div id="pendingChangesSection"></div>
+            
+            <div class="section">
+                <h2>⚡ AI Update Trigger</h2>
+                <button class="trigger-button" onclick="triggerAiUpdate()">
+                    🤖 Trigger AI Update
+                </button>
+                <div class="keyboard-hint">
+                    💡 Or press Shift + Enter anytime
+                </div>
+                <div id="triggerStatus"></div>
+            </div>
+            
+            <div class="section">
+                <h2>📁 Workspace Structure</h2>
+                <div id="workspaceTree" class="workspace-tree">
+                    Loading...
                 </div>
             </div>
         </div>
         
-        <div class="chat-section">
-            <div class="chat-messages" id="chatMessages"></div>
-            <div class="chat-input">
-                <textarea id="messageInput" rows="3" placeholder="Type your instruction in natural language...
-
-Examples:
-file:src/app.py
-Create a Flask web server
-
-or
-
-flow1: take input -> process -> output result"></textarea>
-                <button onclick="sendMessage()">Send</button>
+        <!-- Status Tab -->
+        <div id="status-tab" class="tab-content">
+            <div class="section">
+                <h2>📊 System Status</h2>
+                <div class="stats-grid" id="statsGrid">
+                    Loading...
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>📝 Activity Log</h2>
+                <div class="activity-log" id="activityLog">
+                    Loading...
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>🤖 AI Statistics</h2>
+                <div id="aiStats">
+                    Loading...
+                </div>
             </div>
         </div>
     </div>
     
     <script>
-        let chatHistory = [];
+        // Tab switching
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+            
+            // Refresh status tab data when opened
+            if (tabName === 'status') {
+                refreshStatus();
+            } else if (tabName === 'workspace') {
+                refreshWorkspace();
+            }
+        }
         
+        // Set API Key
         async function setApiKey() {
             const apiKey = document.getElementById('apiKey').value;
             if (!apiKey) {
-                showStatus('Please enter API key', 'error');
+                showStatus('apiStatus', 'Please enter API key', 'error');
                 return;
             }
             
@@ -787,110 +1045,262 @@ flow1: take input -> process -> output result"></textarea>
             });
             
             const data = await response.json();
-            showStatus(data.message, data.success ? 'success' : 'error');
+            showStatus('apiStatus', data.message || data.error, data.success ? 'success' : 'error');
         }
         
-        async function initWorkspace() {
-            const workspace = document.getElementById('workspace').value;
+        // Initialize Project
+        async function initializeProject() {
+            const name = document.getElementById('projectName').value;
+            const language = document.getElementById('language').value;
+            const framework = document.getElementById('framework').value;
+            const description = document.getElementById('description').value;
             
-            const response = await fetch('/api/init_workspace', {
+            if (!name) {
+                showStatus('projectStatus', 'Please enter project name', 'error');
+                return;
+            }
+            
+            showStatus('projectStatus', 'Initializing project...', 'info');
+            
+            const response = await fetch('/api/init_project', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({workspace: workspace})
-            });
-            
-            const data = await response.json();
-            showStatus(data.message, data.success ? 'success' : 'error');
-        }
-        
-        async function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const message = input.value.trim();
-            
-            if (!message) return;
-            
-            // Add user message to chat
-            addMessage('user', message);
-            input.value = '';
-            
-            // Show loading
-            const loadingId = addMessage('assistant', '🤖 Thinking...');
-            
-            // Send to backend
-            const response = await fetch('/api/chat', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({message: message})
+                body: JSON.stringify({
+                    name: name,
+                    language: language,
+                    framework: framework,
+                    description: description
+                })
             });
             
             const data = await response.json();
             
-            // Remove loading
-            document.getElementById(loadingId).remove();
-            
-            // Add AI response
             if (data.success) {
-                let response = data.response;
-                if (data.files_created && data.files_created.length > 0) {
-                    response += '\n\n📁 Files created:\n' + data.files_created.map(f => '• ' + f).join('\n');
-                }
-                addMessage('assistant', response);
+                let message = `✅ Project initialized!<br>`;
+                message += `📁 Location: ${data.path}<br>`;
+                message += `📄 Files created:<br>`;
+                data.structure.forEach(item => {
+                    message += `&nbsp;&nbsp;${item}<br>`;
+                });
+                message += `<br>🎉 Start coding in workspace/src/`;
+                showStatus('projectStatus', message, 'success');
             } else {
-                addMessage('assistant', '❌ Error: ' + data.error);
+                showStatus('projectStatus', data.error, 'error');
             }
         }
         
-        function addMessage(role, content) {
-            const messagesDiv = document.getElementById('chatMessages');
-            const messageId = 'msg-' + Date.now();
-            
-            const messageDiv = document.createElement('div');
-            messageDiv.id = messageId;
-            messageDiv.className = 'message ' + role;
-            messageDiv.innerHTML = `
-                <div class="role">${role === 'user' ? '👤 You' : '🤖 AILib'}</div>
-                <div class="content">${escapeHtml(content)}</div>
-            `;
-            
-            messagesDiv.appendChild(messageDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            
-            return messageId;
-        }
-        
-        function showStatus(message, type) {
-            const statusDiv = document.getElementById('status');
-            statusDiv.className = 'status ' + type;
-            statusDiv.textContent = message;
-            
-            setTimeout(() => {
-                statusDiv.textContent = '';
-                statusDiv.className = 'status';
-            }, 5000);
-        }
-        
-        function useExample(element) {
-            const code = element.querySelector('code').textContent;
-            document.getElementById('messageInput').value = code;
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        // Allow Enter to send (Shift+Enter for new line)
-        document.getElementById('messageInput').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
+        // Execute Instruction
+        async function executeInstruction() {
+            const instruction = document.getElementById('instruction').value;
+            if (!instruction) {
+                showStatus('instructionStatus', 'Please enter an instruction', 'error');
+                return;
             }
-        });
+            
+            showStatus('instructionStatus', '🤖 AI is working...', 'info');
+            
+            const response = await fetch('/api/execute', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({instruction: instruction})
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                let message = `✅ ${data.message}<br>`;
+                if (data.files_created && data.files_created.length > 0) {
+                    message += `<br>📄 Files created:<br>`;
+                    data.files_created.forEach(file => {
+                        message += `&nbsp;&nbsp;• ${file}<br>`;
+                    });
+                }
+                showStatus('instructionStatus', message, 'success');
+                refreshWorkspace();
+            } else {
+                showStatus('instructionStatus', data.error, 'error');
+            }
+        }
+        
+        // Trigger AI Update
+        async function triggerAiUpdate() {
+            showStatus('triggerStatus', '⚡ Triggering AI update...', 'info');
+            
+            const response = await fetch('/api/trigger', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                let message = `✅ AI update complete!<br>`;
+                message += `📄 Files updated: ${data.files_updated.length}<br>`;
+                if (data.results && data.results.length > 0) {
+                    message += `<br>Changes:<br>`;
+                    data.results.forEach(r => {
+                        message += `&nbsp;&nbsp;• ${r.file}: ${r.changes}<br>`;
+                    });
+                }
+                showStatus('triggerStatus', message, 'success');
+                refreshWorkspace();
+            } else {
+                showStatus('triggerStatus', data.message || data.error, 'warning');
+            }
+        }
+        
+        // Refresh Workspace
+        async function refreshWorkspace() {
+            // Get pending changes
+            const response = await fetch('/api/status');
+            const data = await response.json();
+            
+            if (data.success) {
+                // Update pending changes
+                const pending = data.status.pending_changes || [];
+                if (pending.length > 0) {
+                    let html = '<div class="pending-changes">';
+                    html += `<h3>⚠️ ${pending.length} Pending Change(s)</h3>`;
+                    html += '<p>Files modified (press Shift+Enter to trigger AI):</p>';
+                    html += '<ul class="file-list">';
+                    pending.forEach(p => {
+                        html += `<li>${p.file}</li>`;
+                    });
+                    html += '</ul></div>';
+                    document.getElementById('pendingChangesSection').innerHTML = html;
+                } else {
+                    document.getElementById('pendingChangesSection').innerHTML = '';
+                }
+                
+                // Update workspace tree
+                const tree = data.status.workspace_tree || [];
+                let treeHtml = renderTree(tree);
+                document.getElementById('workspaceTree').innerHTML = treeHtml || 'No files yet';
+            }
+        }
+        
+        // Render workspace tree
+        function renderTree(items, level = 0) {
+            if (!items || items.length === 0) return '';
+            
+            let html = '';
+            items.forEach(item => {
+                const indent = '&nbsp;&nbsp;'.repeat(level);
+                const className = item.type === 'dir' ? 'tree-folder' : 'tree-file';
+                html += `<div class="tree-item ${className}">${indent}${item.name}</div>`;
+                
+                if (item.children) {
+                    html += renderTree(item.children, level + 1);
+                }
+            });
+            return html;
+        }
+        
+        // Refresh Status
+        async function refreshStatus() {
+            const response = await fetch('/api/status');
+            const data = await response.json();
+            
+            if (data.success) {
+                // Update stats
+                const stats = data.status.status || {};
+                const aiStats = data.status.ai_stats || {};
+                
+                let statsHtml = `
+                    <div class="stat-card">
+                        <div class="stat-label">AI Ready</div>
+                        <div class="stat-value">${stats.ai_ready ? '✅' : '❌'}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Watching</div>
+                        <div class="stat-value">${stats.watching ? '👁️' : '🔴'}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Pending Changes</div>
+                        <div class="stat-value">${stats.pending_changes || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Total Requests</div>
+                        <div class="stat-value">${aiStats.total_requests || 0}</div>
+                    </div>
+                `;
+                
+                document.getElementById('statsGrid').innerHTML = statsHtml;
+                
+                // Update activity log
+                const activities = data.status.activity_log || [];
+                let activityHtml = '';
+                activities.reverse().forEach(activity => {
+                    const time = new Date(activity.timestamp * 1000).toLocaleTimeString();
+                    activityHtml += `
+                        <div class="activity-item ${activity.type}">
+                            <div class="activity-time">${time}</div>
+                            <div>${activity.message}</div>
+                        </div>
+                    `;
+                });
+                document.getElementById('activityLog').innerHTML = activityHtml || 'No activity yet';
+                
+                // Update AI stats
+                let aiStatsHtml = '<div class="stats-grid">';
+                if (aiStats.cache) {
+                    aiStatsHtml += `
+                        <div class="stat-card">
+                            <div class="stat-label">Cache Hit Rate</div>
+                            <div class="stat-value">${aiStats.cache.hit_rate}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Cached Responses</div>
+                            <div class="stat-value">${aiStats.cache.cached_responses}</div>
+                        </div>
+                    `;
+                }
+                aiStatsHtml += `
+                    <div class="stat-card">
+                        <div class="stat-label">Success Rate</div>
+                        <div class="stat-value">${aiStats.success_rate || '0%'}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Tokens Used</div>
+                        <div class="stat-value">${aiStats.total_tokens_used || 0}</div>
+                    </div>
+                </div>`;
+                
+                document.getElementById('aiStats').innerHTML = aiStatsHtml;
+            }
+        }
+        
+        // Show status message
+        function showStatus(elementId, message, type) {
+            const element = document.getElementById(elementId);
+            element.innerHTML = `<div class="status-box ${type}">${message}</div>`;
+            
+            // Auto-hide after 5 seconds for success messages
+            if (type === 'success') {
+                setTimeout(() => {
+                    element.innerHTML = '';
+                }, 5000);
+            }
+        }
+        
+        // Auto-refresh workspace and status every 5 seconds
+        setInterval(() => {
+            const activeTab = document.querySelector('.tab-content.active').id;
+            if (activeTab === 'workspace-tab') {
+                refreshWorkspace();
+            } else if (activeTab === 'status-tab') {
+                refreshStatus();
+            }
+        }, 5000);
+        
+        // Initial load
+        setTimeout(refreshWorkspace, 1000);
     </script>
 </body>
 </html>
 """
+
+# API Routes
 
 @app.route('/')
 def index():
@@ -906,75 +1316,102 @@ def set_api_key():
     api_key = data.get('api_key')
     
     if not api_key:
-        return jsonify({"success": False, "message": "API key required"})
+        return jsonify({"success": False, "error": "API key required"})
     
     try:
         if ailib_instance is None:
-            ailib_instance = FlexibleAILib(workspace_root="./workspace", api_key=api_key)
-        else:
-            ailib_instance.set_api_key(api_key)
+            ailib_instance = UpgradedAILib(workspace_root="./workspace")
         
-        return jsonify({"success": True, "message": "✅ API key configured successfully!"})
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Error: {str(e)}"})
-
-@app.route('/api/init_workspace', methods=['POST'])
-def init_workspace():
-    """Initialize workspace"""
-    global ailib_instance
+        result = ailib_instance.set_api_key(api_key)
+        return jsonify(result)
     
-    data = request.json
-    workspace = data.get('workspace', './workspace')
-    
-    try:
-        if ailib_instance is None:
-            ailib_instance = FlexibleAILib(workspace_root=workspace)
-        
-        Path(workspace).mkdir(exist_ok=True)
-        
-        return jsonify({
-            "success": True,
-            "message": f"✅ Workspace initialized at {workspace}"
-        })
     except Exception as e:
-        return jsonify({"success": False, "message": f"Error: {str(e)}"})
+        return jsonify({"success": False, "error": str(e)})
 
-@app.route('/api/chat', methods=['POST'])
-def chat():
-    """Chat with AI"""
+@app.route('/api/init_project', methods=['POST'])
+def init_project():
+    """Initialize project"""
     global ailib_instance
     
     if ailib_instance is None:
-        return jsonify({
-            "success": False,
-            "error": "Please set API key and initialize workspace first"
-        })
+        return jsonify({"success": False, "error": "Set API key first"})
     
     data = request.json
-    message = data.get('message')
+    name = data.get('name')
+    language = data.get('language', 'python')
+    framework = data.get('framework', 'none')
+    description = data.get('description', '')
     
-    if not message:
-        return jsonify({"success": False, "error": "Message required"})
+    if not name:
+        return jsonify({"success": False, "error": "Project name required"})
     
     try:
-        result = ailib_instance.chat(message)
+        result = ailib_instance.initialize_project(name, language, framework, description)
         return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route('/api/execute', methods=['POST'])
+def execute_instruction():
+    """Execute natural language instruction"""
+    global ailib_instance
+    
+    if ailib_instance is None:
+        return jsonify({"success": False, "error": "Initialize project first"})
+    
+    data = request.json
+    instruction = data.get('instruction')
+    
+    if not instruction:
+        return jsonify({"success": False, "error": "Instruction required"})
+    
+    try:
+        result = ailib_instance.execute_instruction(instruction)
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route('/api/trigger', methods=['POST'])
+def trigger_update():
+    """Trigger AI to analyze pending changes"""
+    global ailib_instance
+    
+    if ailib_instance is None:
+        return jsonify({"success": False, "error": "Initialize project first"})
+    
+    try:
+        result = ailib_instance.trigger_ai_update()
+        return jsonify(result)
+    
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    """Get workspace status"""
+    """Get system status"""
     global ailib_instance
     
     if ailib_instance is None:
         return jsonify({"success": False, "error": "Not initialized"})
     
     try:
-        status = ailib_instance.get_workspace_status()
+        status = ailib_instance.get_status()
         return jsonify({"success": True, "status": status})
+    
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
+
+@app.route('/api/shutdown', methods=['POST'])
+def shutdown():
+    """Shutdown system"""
+    global ailib_instance
+    
+    if ailib_instance:
+        ailib_instance.cleanup()
+    
+    return jsonify({"success": True, "message": "System shutdown"})
 
 
 # ============================================================================
@@ -988,23 +1425,26 @@ def cli():
     if len(sys.argv) < 2:
         print("""
 ╔══════════════════════════════════════════════════════════════════════╗
-║              AILib - Flexible Natural Language Programming            ║
+║              AILib - Self-Managing AI Development System              ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 Commands:
-  web                      Start web interface
-  chat "<message>"         Chat with AI from command line
-  config <api_key>         Set API key
-  status                   Show workspace status
+  web                      Start web interface (recommended)
+  init <name> <lang>       Initialize project from CLI
+  config <api_key>         Set API key from CLI
+  status                   Show system status
 
 Examples:
   python ailib_core.py web
-  python ailib_core.py chat "file:app.py Create Flask server"
+  python ailib_core.py init my_app python
   python ailib_core.py config AIzaSy...
   
-Web Interface (Recommended):
-  python ailib_core.py web
-  Then open: http://localhost:5000
+Recommended Usage:
+  1. Start web interface: python ailib_core.py web
+  2. Open browser: http://localhost:5000
+  3. Configure API key and project
+  4. Start coding in workspace/src/
+  5. Press Shift+Enter when you want AI help
 """)
         return
     
@@ -1014,34 +1454,37 @@ Web Interface (Recommended):
         if command == "web":
             print("\n🚀 Starting AILib Web Interface...")
             print("📱 Open in browser: http://localhost:5000")
+            print("⌨️  Press Shift+Enter anytime to trigger AI updates")
             print("Press Ctrl+C to stop\n")
             app.run(host='0.0.0.0', port=5000, debug=False)
         
-        elif command == "chat":
-            if len(sys.argv) < 3:
-                print("Usage: python ailib_core.py chat \"<message>\"")
+        elif command == "init":
+            if len(sys.argv) < 4:
+                print("Usage: python ailib_core.py init <name> <language>")
                 return
             
-            message = sys.argv[2]
+            name = sys.argv[2]
+            language = sys.argv[3]
             
-            ailib = FlexibleAILib(workspace_root="./workspace")
+            ailib = UpgradedAILib(workspace_root="./workspace")
             
-            # Check if ready
-            ready, msg = ailib.is_ready()
-            if not ready:
-                print(f"❌ {msg}")
-                print("Set API key first: python ailib_core.py config YOUR_KEY")
+            # Check if API key is set
+            api_key = ailib.config.get_api_key('gemini')
+            if not api_key:
+                print("❌ API key not set. Run: python ailib_core.py config YOUR_KEY")
                 return
             
-            # Execute
-            result = ailib.chat(message)
+            ailib.set_api_key(api_key)
+            result = ailib.initialize_project(name, language, "none")
             
             if result["success"]:
-                print(f"\n✅ {result['response']}")
-                if result.get('files_created'):
-                    print(f"\n📁 Files created:")
-                    for f in result['files_created']:
-                        print(f"   • {f}")
+                print(f"\n✅ Project '{name}' initialized!")
+                print(f"📁 Location: {result['path']}")
+                print("\n📄 Structure:")
+                for item in result["structure"]:
+                    print(f"   {item}")
+                print("\n🎉 Start coding in workspace/src/")
+                print("   Run 'python ailib_core.py web' to use web interface")
             else:
                 print(f"\n❌ Error: {result.get('error')}")
         
@@ -1056,23 +1499,35 @@ Web Interface (Recommended):
             config.set_api_key("gemini", api_key)
             
             print("✅ API key configured!")
+            print("   Run: python ailib_core.py init <name> <language>")
         
         elif command == "status":
-            ailib = FlexibleAILib(workspace_root="./workspace")
-            status = ailib.get_workspace_status()
+            ailib = UpgradedAILib(workspace_root="./workspace")
             
-            print("\n📊 Workspace Status:")
-            print(f"   Location: {status['workspace']}")
-            print(f"   Files: {len(status.get('files', []))}")
-            print(f"   Recent operations: {len(status.get('recent_operations', []))}")
-            print(f"   Chat history: {len(status.get('chat_history', []))} messages")
+            api_key = ailib.config.get_api_key('gemini')
+            if api_key:
+                ailib.set_api_key(api_key)
+            
+            status = ailib.get_status()
+            
+            print("\n📊 System Status:")
+            print(f"   AI Ready: {'✅' if status['status']['ai_ready'] else '❌'}")
+            print(f"   Watching: {'👁️' if status['status']['watching'] else '🔴'}")
+            print(f"   Pending Changes: {status['status']['pending_changes']}")
+            
+            if status.get('project'):
+                print(f"\n📁 Project: {status['project']['name']}")
+                print(f"   Language: {status['project']['language']}")
+                print(f"   Framework: {status['project']['framework']}")
         
         else:
             print(f"Unknown command: {command}")
             print("Run without arguments to see help")
     
     except KeyboardInterrupt:
-        print("\n\n👋 Goodbye!")
+        print("\n\n👋 Shutting down...")
+        if ailib_instance:
+            ailib_instance.cleanup()
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
@@ -1088,136 +1543,151 @@ if __name__ == "__main__":
 
 
 # ============================================================================
-# USAGE EXAMPLES
+# USAGE DOCUMENTATION
 # ============================================================================
 
 """
 ═══════════════════════════════════════════════════════════════════════════
-EXAMPLE 1: Using Web Interface (Recommended)
+COMPLETE USAGE GUIDE
 ═══════════════════════════════════════════════════════════════════════════
 
-1. Start web server:
+🚀 QUICK START (3 steps):
+
+1. Start web interface:
    python ailib_core.py web
 
-2. Open browser: http://localhost:5000
+2. Open browser → http://localhost:5000
 
-3. Enter API key in web interface
+3. Complete setup:
+   - Enter Gemini API key
+   - Create project (name, language, framework)
+   - Start coding!
 
-4. Type natural language instruction:
+═══════════════════════════════════════════════════════════════════════════
+💻 DEVELOPER WORKFLOW:
+═══════════════════════════════════════════════════════════════════════════
 
-   file:src/calculator.py
+Step 1: Setup (One-time)
+────────────────────────
+• Open web UI → http://localhost:5000
+• Set API key
+• Initialize project
+• AI creates workspace/src/ folder
+
+Step 2: Code Normally
+────────────────────────
+• Navigate to workspace/src/
+• Create/edit files as you normally would
+• Write your code
+
+Step 3: Get AI Help
+────────────────────────
+• When you want AI assistance:
+  - Save your file
+  - Press Shift+Enter
+  - AI analyzes your changes
+  - AI improves/completes your code
+  - Changes are written back
+
+Step 4: Continue Coding
+────────────────────────
+• Review AI's improvements
+• Keep coding
+• Press Shift+Enter anytime you need help
+
+═══════════════════════════════════════════════════════════════════════════
+🎯 KEY FEATURES:
+═══════════════════════════════════════════════════════════════════════════
+
+✅ Web UI for setup only (not for coding)
+✅ AI manages src/ folder autonomously  
+✅ File watching - AI detects your changes
+✅ Shift+Enter trigger - instant AI help
+✅ Smart updates - only changes what's needed
+✅ Preserves your code - keeps unchanged parts
+✅ Context-aware - AI knows your entire project
+✅ Multiple languages - Python, JS, TS, Java, C++, Go
+✅ Framework support - Flask, Django, React, Express
+
+═══════════════════════════════════════════════════════════════════════════
+📝 EXAMPLES:
+═══════════════════════════════════════════════════════════════════════════
+
+Example 1: Create Flask API
+────────────────────────────
+1. Web UI → Execute Instruction:
+   "Create a REST API with Flask for user management"
+
+2. AI creates:
+   - workspace/src/app.py (Flask server)
+   - workspace/src/models.py (User model)
+   - workspace/src/routes.py (API routes)
    
-   schema 1: take 2 inputs -> calculate sum -> return square of sum -> print
-   
-   Create a calculator program
+3. You modify app.py to add authentication
 
-5. AI will generate code automatically!
+4. Press Shift+Enter
 
-═══════════════════════════════════════════════════════════════════════════
-EXAMPLE 2: Command Line Usage
-═══════════════════════════════════════════════════════════════════════════
+5. AI analyzes and adds:
+   - Error handling
+   - JWT token generation
+   - Password hashing
+   - Input validation
 
-# Set API key
-python ailib_core.py config AIzaSyCy3JRWw7sS6-1A0fFBT2UzEBx-us2F95w
+Example 2: Fix Bugs
+────────────────────────────
+1. You write code with a bug in workspace/src/calculator.py
 
-# Execute instruction
-python ailib_core.py chat "file:app.py Create Flask server with /hello endpoint"
+2. Press Shift+Enter
 
-# Check status
-python ailib_core.py status
+3. AI detects the bug and fixes it automatically
 
-═══════════════════════════════════════════════════════════════════════════
-EXAMPLE 3: Natural Language Formats Supported
-═══════════════════════════════════════════════════════════════════════════
+4. AI adds error handling and edge cases
 
-Format 1 - Schema Based:
-----------------------
-file:src/math_util.py
+Example 3: Add Features
+────────────────────────────
+1. You start implementing a login function
 
-schema 1: take 2 inputs -> calculate sum -> return square of sum output print
+2. You write basic logic
 
-Format 2 - Flow Based:
---------------------
-file:utils/processor.js
+3. Press Shift+Enter
 
-flow1:
-    inputs = a, b, c
-    sum = a + b + c
-    print(sum)
-
-Make it work in JavaScript
-
-Format 3 - Plain English:
------------------------
-file:api/server.py
-version:1.0
-
-Create a REST API with Flask:
-- GET /users - list all users
-- POST /users - create new user
-- Include database setup with SQLAlchemy
-
-Format 4 - Multiple Files:
-------------------------
-file:src/models.py
-file:src/views.py
-file:src/app.py
-
-Create a complete Flask MVC application with:
-- User model with name, email, password
-- CRUD views for users
-- Main app with all routes
-
-Format 5 - Just Chat:
--------------------
-How do I implement JWT authentication in Python?
-
-(AI will explain without creating files)
+4. AI completes:
+   - Database integration
+   - Session management
+   - Error messages
+   - Input validation
 
 ═══════════════════════════════════════════════════════════════════════════
-EXAMPLE 4: Programming in Your Language
+⚠️  IMPORTANT NOTES:
 ═══════════════════════════════════════════════════════════════════════════
 
-You can write instructions in ANY natural language!
-
-Hindi Example:
--------------
-file:calculator.py
-
-do number input lo aur unka sum calculate karo
-phir sum ka square nikal kar print karo
-
-Spanish Example:
----------------
-file:app.py
-
-Crear una aplicación web con Flask
-- endpoint /hola que devuelve "Hola Mundo"
-- endpoint /suma que suma dos números
-
-French Example:
---------------
-file:serveur.py
-
-Créer un serveur web avec Flask
-- route /bonjour qui retourne "Bonjour le monde"
+• Web UI is ONLY for setup (API key, project config)
+• All coding happens in workspace/src/ folder
+• AI watches src/ for changes automatically
+• Shift+Enter triggers AI analysis
+• AI NEVER rewrites unchanged code
+• Original code is preserved in version history
+• You maintain full control over your code
 
 ═══════════════════════════════════════════════════════════════════════════
-FEATURES SUMMARY
+🔧 ADVANCED:
 ═══════════════════════════════════════════════════════════════════════════
 
-✅ No rigid JSON format - write in natural language
-✅ Flexible file paths - specify any structure you want
-✅ Schema/Flow based programming
-✅ Multi-language support (Python, JavaScript, TypeScript, Java, etc.)
-✅ Web interface for easy interaction
-✅ Command line interface for automation
-✅ Auto-fix code errors
-✅ Install dependencies automatically
-✅ Chat with AI for explanations
-✅ Uses existing modules (file_access, terminal, code_editor, ai_engine)
-✅ Context-aware code generation
-✅ Modifies existing files intelligently
+Manual Trigger via Web UI:
+• Open workspace tab
+• Click "Trigger AI Update" button
+• Or press Shift+Enter (preferred)
+
+Check Pending Changes:
+• Web UI → Workspace tab
+• Shows list of files you modified
+• Shows what changed in each file
+
+View Statistics:
+• Web UI → Status tab
+• See AI usage stats
+• View activity log
+• Check cache performance
 
 ═══════════════════════════════════════════════════════════════════════════
 """
